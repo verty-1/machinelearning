@@ -1,0 +1,143 @@
+---
+title: '**Machine Learning for Activity Recognition of Weight Lifting Exercises**'
+output:
+  html_document:
+    keep_md: yes
+  fig_caption: yes
+  pdf_document: default
+---
+
+##**Executive Summary**
+Machine learning algorithms were used to analyze sensor data collected from six weightlifters performing dumbbell biceps curl exercises. Data were collected from three wearable sensors (on arm, forearm, and belt) and one dumbbell sensor.  The weightlifting participants performed the exercises in five distinct styles under the supervision of a trainer. The weightlifting style was classified as Class A for the correct form, and Class B, C, D, and E for different improper forms.  
+
+The objective of this study was to determine if it was possible to use the sensor data and machine learning algorithms to predict the five distinct styles of weight lifting.  Recursive partition and random forest algorithms were applied. The random forest algorithm was cross validated and found to have 98.3% accuracy for predicting the weightlifting style.  The final random forest model included at least one measurement from each of the four sensors used.
+
+##**Source Data and Previous Research** 
+
+Further description of the weightlifting exercise study and the source data can be found at http://groupware.les.inf.puc-rio.br/ha .  The study was published in 2013:
+
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
+
+##**Data Preparation** 
+The data file "pml-training.csv" was used for model building and cross validation. The data file "pml-testing.csv" contained the 20 question prediction quiz set for testing.
+
+The weightlifting style, or outcome, was designated as "classe" in the training data.  The dataset was prepared for analysis by removing columns containing the user name, date, and window information that were not sensor data.  In addition, sensor variables that were missing more than 50% of the measurement values were removed prior to analysis.  
+
+```{r intro, echo=TRUE, message=FALSE, results='hide'}
+# Load libraries
+library(caret)
+library(rattle)
+library(ggplot2)
+
+# Read and clean data
+        training <- read.csv("pml-training.csv", na.strings = c("NA", "#DIV/0!"))
+        test2 <- read.csv("pml-testing.csv", na.strings = c("NA", "#DIV/0!"))
+
+# Remove columns that are not variables
+# user_name and dates are not relevant factors for generalized predictions
+        training <- training[, -(1:7)]
+        test2  <- test2[, -(1:7)]
+
+# Remove column variables where > 50% of data is missing
+        sparse  <- apply(is.na(training), 2, sum) > (dim(training)[1] * 0.5) 
+        training <- training[!sparse]
+        test2  <- test2[!sparse]  
+```
+
+To enable cross validation, the training dataframe was then partitioned using the 60% / 40% recommendation.  The resulting dataframes for the analysis were:
+
+* "train", a subset of the original training data used to create machine learning models
+
+* "test1", a subset of the original training data used for cross validation and accuracy calculations
+
+* "test2", data for the 20 question prediction quiz set for Coursera
+
+```{r part, echo=TRUE, message=FALSE}        
+        set.seed(123)
+        inTrain <- createDataPartition(y=training$classe, p=0.60, list=FALSE)
+        train  <- training[inTrain, ]
+        test1  <- training[-inTrain, ]        
+```
+The train data frame was checked for near zero covariates. No near zero variates were expected or found for this continuous measurement data.
+
+```{r nzv, echo=TRUE, message=FALSE}   
+        nzv <- nearZeroVar(train) 
+        if(length(nzv) > 0) {
+                train <- train[,-nzv]
+                test1 <- test1[,-nzv]
+                test2 <- test2[,-nzv]
+        }                
+```
+
+##**Variable Importance and Recursive Partitioning** 
+
+Following data preparation, 52 sensor measurements and 1 outcome remained in the data frame. In order to build simpler models with lower computation times, it was necessary to reduce the number of variables.  A recursive partitioning classification tree was used to rank variable importance in a computationally efficient manner.   The analysis was performed using the "rpart" method in the caret library.  
+
+```{r mrp, echo=TRUE, message=FALSE}   
+        set.seed(123)
+        mrp <- train(classe ~ ., data = train, method = "rpart") 
+        mrp_test1 <- predict(mrp, test1)
+        confusionMatrix(mrp_test1, test1$classe)
+```
+The confusion table above shows the cross validation results for "test1".  The 51% prediction accuracy using recursive partitioning was poor. However, the algorithm did provide valuable information regarding variable importance. The partition tree below indicates that there were a few dominant measurements that classified the outcome for "classe".
+
+```{r fig1, echo=TRUE, message=FALSE, fig.width=12, fig.height=8} 
+        fancyRpartPlot(mrp$finalModel, sub = "Caret Recursive Partitioning to Rank Variable Importance")
+
+```
+
+Variable importance was ranked (table below), and the top ten variables from recursive partitioning were used to build an improved model. The ten most important variables included at least one measurement from each of the four sensors used (arm, forearm, belt, dumbbell).
+
+
+```{r vi, echo=TRUE, message=FALSE}   
+        print(varImp(mrp, surrogates = TRUE, competes = FALSE))
+        mrp_top <- as.data.frame(varImp(mrp, surrogates = TRUE, competes = FALSE)$importance)
+        mrp_top$names <- row.names(mrp_top)
+        b <- order(mrp_top$Overall, decreasing = TRUE)
+        mrp_top <- mrp_top[b,]
+        mrp_top10 <- mrp_top[1:10,2]
+```
+
+The clustering patterns for the top four variables "roll_belt", "pitch_forearm", "yaw_belt" and "magnet_dumbbell_z" are shown below. Note that the proper form of lifting, "classe A", tended to have a tighter measurement distribution for these variables.
+
+
+```{r fig2, echo=TRUE, message=FALSE, fig.width=12, fig.height=8} 
+
+        g1 <- (qplot(roll_belt, pitch_forearm, colour=classe, data=train) + theme_bw())
+        g1
+```        
+```{r fig3, echo=TRUE, message=FALSE, fig.width=12, fig.height=8} 
+        g2 <- (qplot(yaw_belt, magnet_dumbbell_z, colour=classe, data=train) + theme_bw())
+        g2
+```
+
+##**Random Forest Learning** 
+
+To improve prediction accuracy, a random forest algorithm "rf" in the caret library was applied along with the top ten variates from the previous analysis. The confusion table below shows the cross validation results for "test1".  A high 98.3% prediction accuracy was achieved using the random forest algorithm.    
+
+```{r mrf, echo=TRUE, message=FALSE, cache = TRUE}        
+        set.seed(123)
+        mrf <- train(classe ~ roll_belt + pitch_forearm + yaw_belt + magnet_dumbbell_z +  
+                pitch_belt + magnet_dumbbell_y + pitch_arm + accel_belt_x + 
+                magnet_belt_z + accel_dumbbell_y, data = train, method = "rf", 
+                allowParallel=TRUE) 
+        mrf_test1 <- predict(mrf, test1)
+        confusionMatrix(mrf_test1, test1$classe)
+```
+
+##**Conclusion** 
+
+The accuracy from the random forest model was 98.3% using the partitioned training data "test1", and therefore suitable for classification predictions outside of the training data set. The out-of-sample error is defined as the error in classifying the "classe" activity in the "test1"" cross validation.  That is, the out-of-sample error is (1 - accuracy)x100 = (1-.9829)x100 = 1.71%.  The out-of-sample error is also easily calculated outside of the confusion matrix as:
+
+```{r oss, echo=TRUE, message=FALSE}
+
+        print(sum(mrf_test1 != test1$classe)/length(test1$classe)*100)
+```
+The classifications for the 20 sample prediction quiz ("test2") were 100% accurate (0% out-of-sample error) and were calculated for submission as follows:
+
+```{r test2, echo=TRUE, message=FALSE}             
+        mrf_test2 <- predict(mrf, test2)
+        print(mrf_test2)
+        # End
+```
